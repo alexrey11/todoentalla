@@ -1,22 +1,54 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Store, Delete, AlertCircle, HelpCircle, ArrowRight, ShieldCheck, Package, TrendingUp, Wallet } from 'lucide-react';
+import {
+  Store,
+  Delete,
+  AlertCircle,
+  HelpCircle,
+  ArrowRight,
+  ShieldCheck,
+  Package,
+  TrendingUp,
+  Wallet,
+  Users,
+} from 'lucide-react';
 import { cn } from '@/utils/cn';
-import type { Usuario } from '@/types';
+import { db } from '@/db';
+import type { Usuario } from '@/db';
+import { registrarLog } from '@/utils/logger';
+import { cargarPreferencias } from '@/utils/preferencias';
 
 interface LoginProps {
-  usuarios: Usuario[];
   onLogin: (usuario: Usuario) => void;
 }
 
 const MAX_PIN_LENGTH = 8;
 const MIN_PIN_LENGTH = 4;
 
-export function Login({ usuarios, onLogin }: LoginProps) {
+export function Login({ onLogin }: LoginProps) {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [showHint, setShowHint] = useState(false);
   const [shake, setShake] = useState(false);
   const [attempts, setAttempts] = useState(0);
+  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const [pinMaestro, setPinMaestro] = useState('');
+  const [cargando, setCargando] = useState(true);
+
+  // Cargar usuarios de Dexie + PIN maestro de preferencias
+  useEffect(() => {
+    (async () => {
+      try {
+        const users = await db.usuarios.toArray();
+        setUsuarios(users.filter(u => u.activo !== false));
+        const prefs = await cargarPreferencias();
+        setPinMaestro(prefs.pinMaestro || '');
+      } catch (e) {
+        console.error('[login] Error cargando usuarios:', e);
+      } finally {
+        setCargando(false);
+      }
+    })();
+  }, []);
 
   const handleDigit = useCallback((digit: string) => {
     setError('');
@@ -28,10 +60,29 @@ export function Login({ usuarios, onLogin }: LoginProps) {
     setPin((prev) => prev.slice(0, -1));
   }, []);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (pin.length < MIN_PIN_LENGTH) return;
+
+    // 1) Verificar PIN maestro (desbloquea como admin/jefe)
+    if (pinMaestro && pin === pinMaestro) {
+      const admin = usuarios.find(u => u.rol === 'admin') ?? usuarios.find(u => u.rol === 'jefe') ?? usuarios[0];
+      if (admin) {
+        await registrarLog('login_ok', `Login con PIN maestro: ${admin.nombre}`, {
+          usuarioId: admin.id,
+          usuarioNombre: admin.nombre,
+        });
+        onLogin(admin);
+        return;
+      }
+    }
+
+    // 2) Buscar usuario con ese PIN
     const user = usuarios.find((u) => u.pin === pin);
     if (user) {
+      await registrarLog('login_ok', `Login exitoso: ${user.nombre}`, {
+        usuarioId: user.id,
+        usuarioNombre: user.nombre,
+      });
       onLogin(user);
     } else {
       setAttempts((a) => a + 1);
@@ -39,8 +90,11 @@ export function Login({ usuarios, onLogin }: LoginProps) {
       setShake(true);
       setTimeout(() => setShake(false), 400);
       setTimeout(() => setPin(''), 400);
+      await registrarLog('login_fallido', 'PIN incorrecto', {
+        detalles: `Intento ${attempts + 1}`,
+      });
     }
-  }, [pin, usuarios, onLogin]);
+  }, [pin, usuarios, pinMaestro, onLogin, attempts]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -58,15 +112,48 @@ export function Login({ usuarios, onLogin }: LoginProps) {
 
   const canSubmit = pin.length >= MIN_PIN_LENGTH;
 
+  // ===== CARGA =====
+  if (cargando) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-10 h-10 mx-auto animate-spin rounded-full border-2 border-blue-500/30 border-t-blue-500" />
+          <p className="text-sm text-slate-400 mt-4">Cargando…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== SIN USUARIOS =====
+  if (usuarios.length === 0) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm text-center">
+          <div className="w-14 h-14 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
+            <Users className="w-7 h-7 text-red-400" />
+          </div>
+          <h2 className="text-lg font-semibold text-white">No hay usuarios registrados</h2>
+          <p className="text-sm text-slate-400 mt-2">
+            Contacta al administrador del sistema o reinstala la aplicación.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== RENDER =====
   return (
     <div className="min-h-screen bg-slate-950 flex">
       {/* Panel izquierdo — branding */}
       <div className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12 border-r border-white/5 relative overflow-hidden">
-        {/* Fondo decorativo sutil */}
-        <div className="absolute inset-0 opacity-[0.015]" style={{
-          backgroundImage: 'radial-gradient(circle at 25% 25%, white 1px, transparent 1px), radial-gradient(circle at 75% 75%, white 1px, transparent 1px)',
-          backgroundSize: '48px 48px',
-        }} />
+        <div
+          className="absolute inset-0 opacity-[0.015]"
+          style={{
+            backgroundImage:
+              'radial-gradient(circle at 25% 25%, white 1px, transparent 1px), radial-gradient(circle at 75% 75%, white 1px, transparent 1px)',
+            backgroundSize: '48px 48px',
+          }}
+        />
 
         {/* Logo + nombre */}
         <div className="relative flex items-center gap-3 animate-fade-in">
@@ -85,11 +172,10 @@ export function Login({ usuarios, onLogin }: LoginProps) {
             Gestiona tu negocio con total control
           </h2>
           <p className="text-sm text-slate-400 mt-3 leading-relaxed">
-            Ventas, inventario, fiados, caja y reportes en una sola aplicación.
-            Funciona sin internet — tus datos siempre contigo.
+            Ventas, inventario, fiados, caja y reportes en una sola aplicación. Funciona sin
+            internet — tus datos siempre contigo.
           </p>
 
-          {/* Features */}
           <div className="grid grid-cols-1 gap-3 mt-8">
             {[
               { icon: Package, text: 'Inventario en tiempo real con alertas de stock' },
@@ -113,7 +199,6 @@ export function Login({ usuarios, onLogin }: LoginProps) {
           </div>
         </div>
 
-        {/* Footer */}
         <div className="relative flex items-center gap-2 text-xs text-slate-600">
           <ShieldCheck className="w-3.5 h-3.5" />
           <span>Datos locales cifrados — 100% offline</span>
@@ -123,7 +208,7 @@ export function Login({ usuarios, onLogin }: LoginProps) {
       {/* Panel derecho — login */}
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="w-full max-w-sm">
-          {/* Logo móvil (visible solo en móvil) */}
+          {/* Logo móvil */}
           <div className="lg:hidden flex flex-col items-center mb-8 animate-fade-in">
             <div className="w-14 h-14 rounded-xl bg-blue-600 flex items-center justify-center mb-3">
               <Store className="w-8 h-8 text-white" />
@@ -155,14 +240,14 @@ export function Login({ usuarios, onLogin }: LoginProps) {
                       ? 'bg-red-500 border-red-500 scale-110'
                       : 'bg-blue-500 border-blue-500 scale-110'
                     : error
-                    ? 'border-red-500/30'
-                    : 'border-white/15'
+                      ? 'border-red-500/30'
+                      : 'border-white/15'
                 )}
               />
             ))}
           </div>
 
-          {/* Error message */}
+          {/* Error */}
           {error && (
             <div className="flex items-center justify-center gap-2 text-sm text-red-400 mb-4 animate-fade-in">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -171,7 +256,10 @@ export function Login({ usuarios, onLogin }: LoginProps) {
           )}
 
           {/* Numpad */}
-          <div className="grid grid-cols-3 gap-2.5 animate-slide-up" style={{ animationDelay: '60ms', animationFillMode: 'both' }}>
+          <div
+            className="grid grid-cols-3 gap-2.5 animate-slide-up"
+            style={{ animationDelay: '60ms', animationFillMode: 'both' }}
+          >
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
               <button
                 key={digit}
@@ -209,7 +297,10 @@ export function Login({ usuarios, onLogin }: LoginProps) {
           </div>
 
           {/* Hint */}
-          <div className="mt-6 text-center animate-fade-in" style={{ animationDelay: '120ms', animationFillMode: 'both' }}>
+          <div
+            className="mt-6 text-center animate-fade-in"
+            style={{ animationDelay: '120ms', animationFillMode: 'both' }}
+          >
             <button
               onClick={() => setShowHint(!showHint)}
               className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors duration-150"
@@ -222,16 +313,6 @@ export function Login({ usuarios, onLogin }: LoginProps) {
                 Contacta al administrador o jefe del punto de venta para restablecer tu PIN.
               </p>
             )}
-          </div>
-
-          {/* Demo PINs */}
-          <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-600 animate-fade-in" style={{ animationDelay: '200ms', animationFillMode: 'both' }}>
-            <span>Demo:</span>
-            <code className="px-1.5 py-0.5 rounded bg-slate-900 border border-white/5 text-slate-400">1234</code>
-            <span>admin</span>
-            <span class="text-slate-700">·</span>
-            <code className="px-1.5 py-0.5 rounded bg-slate-900 border border-white/5 text-slate-400">5678</code>
-            <span>vendedor</span>
           </div>
         </div>
       </div>

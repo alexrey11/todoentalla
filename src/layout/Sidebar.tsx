@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Menu,
   X,
@@ -10,6 +10,12 @@ import {
 import { cn } from '@/utils/cn';
 import { navSections, type NavItem } from './navConfig';
 import type { Rol } from '@/types';
+import {
+  cargarPreferencias,
+  vendedorPuedeVer,
+  type Preferencias,
+  PREFERENCIAS_DEFAULT,
+} from '@/utils/preferencias';
 
 interface SidebarProps {
   activeId: string;
@@ -19,6 +25,11 @@ interface SidebarProps {
   pdvNombre: string;
   onLogout: () => void;
 }
+
+// Mapeo de IDs de navConfig a IDs que espera vendedorPuedeVer
+const MAPEO_VISTAS: Record<string, string> = {
+  'nueva-venta': 'venta',
+};
 
 export function Sidebar({
   activeId,
@@ -31,30 +42,57 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [prefs, setPrefs] = useState<Preferencias>(PREFERENCIAS_DEFAULT);
+
+  // Cargar preferencias y escuchar cambios
+  useEffect(() => {
+    cargarPreferencias().then(setPrefs);
+    const handler = (e: any) => {
+      if (e?.detail) setPrefs(e.detail);
+    };
+    window.addEventListener('preferencias-cambiadas', handler);
+    return () => window.removeEventListener('preferencias-cambiadas', handler);
+  }, []);
+
+  // Traducir ID y comprobar si el vendedor puede ver
+  const puedeVerVendedor = (itemId: string): boolean => {
+    const vistaTraducida = MAPEO_VISTAS[itemId] ?? itemId;
+    return vendedorPuedeVer(vistaTraducida, prefs);
+  };
 
   const filteredSections = useMemo(() => {
-    if (!search.trim()) {
-      return navSections
-        .map((sec) => ({
-          ...sec,
-          items: sec.items.filter(
-            (item) => !item.roles || item.roles.includes(userRol)
-          ),
-        }))
-        .filter((sec) => sec.items.length > 0);
-    }
-    const q = search.toLowerCase();
-    return navSections
+    const filterItem = (item: NavItem): boolean => {
+      // 1) Filtrar por rol
+      if (item.roles && !item.roles.includes(userRol)) return false;
+
+      // 2) Si es vendedor, filtrar por vistasPermitidasVendedor
+      if (userRol === 'vendedor') {
+        return puedeVerVendedor(item.id);
+      }
+
+      // 3) Si es admin/jefe, filtrar por menuItemsOcultos
+      if (prefs.menuItemsOcultos.includes(item.id)) return false;
+
+      return true;
+    };
+
+    const filtered = navSections
       .map((sec) => ({
         ...sec,
-        items: sec.items.filter(
-          (item) =>
-            (!item.roles || item.roles.includes(userRol)) &&
-            item.label.toLowerCase().includes(q)
-        ),
+        items: sec.items.filter(filterItem),
       }))
       .filter((sec) => sec.items.length > 0);
-  }, [search, userRol]);
+
+    // Aplicar búsqueda si hay
+    if (!search.trim()) return filtered;
+    const q = search.toLowerCase();
+    return filtered
+      .map((sec) => ({
+        ...sec,
+        items: sec.items.filter((item) => item.label.toLowerCase().includes(q)),
+      }))
+      .filter((sec) => sec.items.length > 0);
+  }, [search, userRol, prefs]);
 
   const handleNavigate = (id: string) => {
     onNavigate(id);
@@ -66,7 +104,12 @@ export function Sidebar({
   const sidebarContent = (
     <div className="flex flex-col h-full bg-slate-950">
       {/* Header */}
-      <div className={cn('flex items-center h-14 border-b border-white/10 px-3 shrink-0', collapsed ? 'justify-center' : 'justify-between')}>
+      <div
+        className={cn(
+          'flex items-center h-14 border-b border-white/10 px-3 shrink-0',
+          collapsed ? 'justify-center' : 'justify-between'
+        )}
+      >
         {!collapsed && (
           <div className="flex items-center gap-2.5 overflow-hidden">
             <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
@@ -85,7 +128,9 @@ export function Sidebar({
           className="hidden lg:flex text-slate-500 hover:text-slate-100 transition-colors duration-150 p-1"
           title={collapsed ? 'Expandir' : 'Colapsar'}
         >
-          <ChevronLeft className={cn('w-5 h-5 transition-transform duration-150', collapsed && 'rotate-180')} />
+          <ChevronLeft
+            className={cn('w-5 h-5 transition-transform duration-150', collapsed && 'rotate-180')}
+          />
         </button>
       </div>
 
@@ -107,6 +152,12 @@ export function Sidebar({
 
       {/* Nav sections */}
       <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-4">
+        {filteredSections.length === 0 && (
+          <div className="px-3 py-6 text-center">
+            <p className="text-xs text-slate-500">No hay secciones disponibles</p>
+          </div>
+        )}
+
         {filteredSections.map((section) => (
           <div key={section.id}>
             {!collapsed && (
@@ -146,7 +197,7 @@ export function Sidebar({
         {!collapsed && (
           <div className="flex items-center gap-2.5 px-1">
             <div className="w-8 h-8 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center text-sm font-semibold text-slate-300 shrink-0">
-              {userName.charAt(0)}
+              {userName.charAt(0).toUpperCase()}
             </div>
             <div className="overflow-hidden flex-1">
               <p className="text-sm font-medium text-slate-100 truncate">{userName}</p>
