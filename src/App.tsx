@@ -71,6 +71,55 @@ function App() {
   // ===== ARRANQUE =====
   useEffect(() => {
     (async () => {
+      // 1) Seed inicial: si no hay PDV ni usuarios, crear datos por defecto
+      try {
+        const { db } = await import('./db');
+
+        // PDV por defecto
+        let pdvs = await db.puntosDeVenta.toArray();
+        let pdvId: number;
+        if (pdvs.length === 0) {
+          pdvId = await db.puntosDeVenta.add({
+            nombre: 'Principal',
+            icono: '🏪',
+            activo: true,
+            creadoEn: new Date(),
+          });
+          console.log('[seed] PDV "Principal" creado con id', pdvId);
+        } else {
+          pdvId = pdvs[0].id!;
+        }
+
+        // Categoría por defecto
+        const cats = await db.categorias.toArray();
+        if (cats.length === 0) {
+          await db.categorias.add({
+            puntoDeVentaId: pdvId,
+            nombre: 'General',
+            descripcion: 'Categoría por defecto',
+            creadoEn: new Date(),
+          });
+          console.log('[seed] Categoría "General" creada');
+        }
+
+        // Usuario admin por defecto
+        const usuarios = await db.usuarios.toArray();
+        if (usuarios.length === 0) {
+          await db.usuarios.add({
+            nombre: 'Administrador',
+            pin: '1234',
+            rol: 'admin',
+            creadoEn: new Date(),
+            puntosDeVentaIds: [pdvId],
+            activo: true,
+          });
+          console.log('[seed] Usuario admin creado. PIN: 1234');
+        }
+      } catch (e) {
+        console.error('[seed] Error creando datos iniciales:', e);
+      }
+
+      // 2) Continuar con el arranque normal
       const p = await cargarPreferencias();
       setPrefs(p);
       aplicarPreferenciasVisuales(p);
@@ -259,10 +308,10 @@ function App() {
   const renderPage = () => {
     // IDs de Bolt
     if (activePage === 'dashboard') return <Dashboard />;
-    if (activePage === 'nueva-venta') return <NuevaVenta />;
+    if (activePage === 'nueva-venta') return <NuevaVenta usuarioActual={usuarioActual} />;
     if (activePage === 'cierre') return <CierreCaja />;
     if (activePage === 'puntos-venta') return <PuntosDeVenta />;
-    if (activePage === 'configuracion') return <Configuracion />;
+    if (activePage === 'configuracion') return <Configuracion usuarioActual={usuarioActual} />;
     if (activePage === 'categorias') return <Categorias />;
     if (activePage === 'gastos') return <Gastos />;
     if (activePage === 'tasas') return <TasasCambio />;

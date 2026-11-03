@@ -129,18 +129,84 @@ export function Login({ onLogin }: LoginProps) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
         <div className="w-full max-w-sm text-center">
-          <div className="w-14 h-14 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
-            <Users className="w-7 h-7 text-red-400" />
+          <div className="w-14 h-14 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto mb-4">
+            <Users className="w-7 h-7 text-amber-400" />
           </div>
           <h2 className="text-lg font-semibold text-white">No hay usuarios registrados</h2>
-          <p className="text-sm text-slate-400 mt-2">
-            Contacta al administrador del sistema o reinstala la aplicación.
+          <p className="text-sm text-slate-400 mt-2 mb-6">
+            Parece que la base de datos está vacía. Puedes crear un administrador por defecto
+            para empezar a usar la aplicación.
+          </p>
+          <button
+            onClick={async () => {
+              try {
+                const { db } = await import('@/db');
+
+                // Asegurar PDV
+                let pdvs = await db.puntosDeVenta.toArray();
+                let pdvId: number;
+                if (pdvs.length === 0) {
+                  pdvId = await db.puntosDeVenta.add({
+                    nombre: 'Principal',
+                    icono: '🏪',
+                    activo: true,
+                    creadoEn: new Date(),
+                  });
+                } else {
+                  pdvId = pdvs[0].id!;
+                }
+
+                // Asegurar categoría
+                const cats = await db.categorias.toArray();
+                if (cats.length === 0) {
+                  await db.categorias.add({
+                    puntoDeVentaId: pdvId,
+                    nombre: 'General',
+                    descripcion: 'Categoría por defecto',
+                    creadoEn: new Date(),
+                  });
+                }
+
+                // Crear admin
+                await db.usuarios.add({
+                  nombre: 'Administrador',
+                  pin: '1234',
+                  rol: 'admin',
+                  creadoEn: new Date(),
+                  puntosDeVentaIds: [pdvId],
+                  activo: true,
+                });
+
+                // Recargar usuarios
+                const users = await db.usuarios.toArray();
+                setUsuarios(users.filter((u) => u.activo !== false));
+
+                // Login automático
+                const admin = users[0];
+                if (admin) {
+                  await registrarLog('login_ok', `Admin creado y login automático`, {
+                    usuarioId: admin.id,
+                    usuarioNombre: admin.nombre,
+                  });
+                  onLogin(admin);
+                }
+              } catch (e: any) {
+                console.error('[login] Error creando admin:', e);
+                setError(`Error: ${e?.message ?? 'desconocido'}`);
+              }
+            }}
+            className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 text-white py-3 text-sm font-semibold transition-colors duration-150 active:scale-[0.98]"
+          >
+            Crear administrador por defecto
+          </button>
+          <p className="text-xs text-slate-500 mt-4">
+            Se creará un usuario <strong className="text-slate-300">Administrador</strong> con PIN{' '}
+            <code className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">1234</code>
           </p>
         </div>
       </div>
     );
   }
-
   // ===== RENDER =====
   return (
     <div className="min-h-screen bg-slate-950 flex">

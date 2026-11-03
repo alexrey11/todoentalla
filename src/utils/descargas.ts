@@ -23,9 +23,8 @@ export async function guardarArchivo(
     mimeType: string
 ): Promise<{ ok: boolean; mensaje: string; ubicacion?: string }> {
     try {
-        if (esTauri()) {
-            return await guardarConTauri(contenido, nombreArchivo);
-        }
+
+
         if (Capacitor.isNativePlatform()) {
             return await guardarConCapacitor(contenido, nombreArchivo);
         }
@@ -83,26 +82,7 @@ function esCancelacion(e: any): boolean {
     return msg.includes('cancel') || msg.includes('abort') || msg.includes('user cancelled');
 }
 
-// ===== Tauri (PC) =====
-async function guardarConTauri(
-    contenido: Blob | string | Uint8Array,
-    nombreArchivo: string
-): Promise<{ ok: boolean; mensaje: string; ubicacion?: string }> {
-    const { save } = await import('@tauri-apps/plugin-dialog');
-    const { writeFile } = await import('@tauri-apps/plugin-fs');
 
-    const extension = nombreArchivo.split('.').pop() || 'txt';
-    const ruta = await save({
-        defaultPath: nombreArchivo,
-        filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
-    });
-
-    if (!ruta) return { ok: false, mensaje: 'cancelado' };
-
-    const bytes = await convertirABytes(contenido);
-    await writeFile(ruta, bytes);
-    return { ok: true, mensaje: `Guardado en: ${ruta}`, ubicacion: ruta };
-}
 
 // ===== Capacitor (Android 11+) =====
 async function guardarConCapacitor(

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TodoenTalla</string>
+    <string name="title_activity_main">TodoenTalla</string>
+    <string name="package_name">com.alexrey.todoentalla</string>
+    <string name="custom_url_scheme">com.alexrey.todoentalla</string>
+</resources>

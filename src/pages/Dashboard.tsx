@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -24,12 +24,15 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Calendar,
+  Users,
 } from 'lucide-react';
 import { Card, Badge } from '@/components/ui';
 import { cn } from '@/utils/cn';
 import { formatCurrency, formatCurrencyWithSymbol } from '@/utils/format';
-import { mockVentas, mockProductos, mockGastos } from '@/mockData';
 import { PageHeader } from '@/layout/PageHeader';
+import { db, stockTotalProducto } from '@/db';
+import type { Venta, Producto, Gasto } from '@/db';
+import { usePDV } from '@/contexts/PuntoDeVentaContext';
 
 ChartJS.register(
   CategoryScale,
@@ -54,11 +57,56 @@ const periodLabels: Record<Periodo, string> = {
 };
 
 export function Dashboard() {
+  const { pdvActivo, modoTodos } = usePDV();
   const [periodo, setPeriodo] = useState<Periodo>('mes');
+  const [ventas, setVentas] = useState<Venta[]>([]);
+  const [productos, setProductos] = useState<Producto[]>([]);
+  const [gastos, setGastos] = useState<Gasto[]>([]);
+  const [clientes, setClientes] = useState<any[]>([]);
+  const [cargando, setCargando] = useState(true);
 
+  // Cargar datos de Dexie
+  useEffect(() => {
+    (async () => {
+      try {
+        const [v, p, g, c] = await Promise.all([
+          db.ventas.toArray(),
+          db.productos.toArray(),
+          db.gastos.toArray(),
+          db.clientes.toArray(),
+        ]);
+        setVentas(v);
+        setProductos(p);
+        setGastos(g);
+        setClientes(c);
+      } catch (e) {
+        console.error('[dashboard] Error cargando:', e);
+      } finally {
+        setCargando(false);
+      }
+    })();
+  }, []);
+
+  // Filtrar por PDV activo
+  const ventasPDV = useMemo(() => {
+    if (modoTodos || !pdvActivo?.id) return ventas;
+    return ventas.filter((v) => v.puntoDeVentaId === pdvActivo.id);
+  }, [ventas, pdvActivo, modoTodos]);
+
+  const productosPDV = useMemo(() => {
+    if (modoTodos || !pdvActivo?.id) return productos;
+    return productos.filter((p) => p.puntoDeVentaId === pdvActivo.id);
+  }, [productos, pdvActivo, modoTodos]);
+
+  const gastosPDV = useMemo(() => {
+    if (modoTodos || !pdvActivo?.id) return gastos;
+    return gastos.filter((g) => g.puntoDeVentaId === pdvActivo.id);
+  }, [gastos, pdvActivo, modoTodos]);
+
+  // Filtrar por período
   const filteredVentas = useMemo(() => {
-    const now = new Date('2026-11-03');
-    return mockVentas.filter((v) => {
+    const now = new Date();
+    return ventasPDV.filter((v) => {
       if (v.estado !== 'completada') return false;
       const fecha = new Date(v.fecha);
       switch (periodo) {
@@ -78,65 +126,95 @@ export function Dashboard() {
           return true;
       }
     });
-  }, [periodo]);
+  }, [ventasPDV, periodo]);
+
+  const filteredGastos = useMemo(() => {
+    const now = new Date();
+    return gastosPDV.filter((g) => {
+      const fecha = new Date(g.fecha);
+      switch (periodo) {
+        case 'hoy':
+          return fecha.toDateString() === now.toDateString();
+        case 'semana': {
+          const weekAgo = new Date(now);
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          return fecha >= weekAgo;
+        }
+        case 'mes': {
+          const monthAgo = new Date(now);
+          monthAgo.setDate(monthAgo.getDate() - 30);
+          return fecha >= monthAgo;
+        }
+        default:
+          return true;
+      }
+    });
+  }, [gastosPDV, periodo]);
 
   // KPIs
   const totalVendido = filteredVentas.reduce((sum, v) => sum + v.total, 0);
   const totalGanancia = filteredVentas.reduce((sum, v) => {
-    const costo = v.items.reduce((s, item) => {
-      const prod = mockProductos.find((p) => p.id === item.productoId);
-      return s + (prod?.precioCompra ?? 0) * item.cantidad;
+    const items = v.items ?? [];
+    if (items.length === 0) return sum;
+    return sum + items.reduce((si, item) => {
+      const prod = productosPDV.find((p) => p.id === item.productoId);
+      const costo = (prod?.precioCompra ?? item.precioCompra ?? 0) * item.cantidad;
+      return si + (item.subtotal - costo);
     }, 0);
-    return sum + v.total - costo - v.impuesto;
   }, 0);
   const ticketPromedio =
     filteredVentas.length > 0 ? totalVendido / filteredVentas.length : 0;
-  const totalProductos = mockProductos.length;
+  const totalGastos = filteredGastos.reduce((s, g) => s + g.monto, 0);
 
-  // Comparison with previous period
-  const now = new Date('2026-11-03');
-  const prevPeriodStart = new Date(now);
-  const prevPeriodEnd = new Date(now);
-  switch (periodo) {
-    case 'hoy':
-      prevPeriodStart.setDate(prevPeriodStart.getDate() - 1);
-      prevPeriodEnd.setDate(prevPeriodEnd.getDate() - 1);
-      break;
-    case 'semana':
-      prevPeriodStart.setDate(prevPeriodStart.getDate() - 14);
-      prevPeriodEnd.setDate(prevPeriodEnd.getDate() - 7);
-      break;
-    case 'mes':
-      prevPeriodStart.setDate(prevPeriodStart.getDate() - 60);
-      prevPeriodEnd.setDate(prevPeriodEnd.getDate() - 30);
-      break;
-    default:
-      prevPeriodStart.setFullYear(prevPeriodStart.getFullYear() - 1);
-  }
+  // Comparativa con período anterior
+  const prevVentas = useMemo(() => {
+    const now = new Date();
+    const prevStart = new Date(now);
+    const prevEnd = new Date(now);
 
-  const prevVentas = mockVentas.filter((v) => {
-    if (v.estado !== 'completada') return false;
-    const fecha = new Date(v.fecha);
-    return fecha >= prevPeriodStart && fecha <= prevPeriodEnd;
-  });
+    switch (periodo) {
+      case 'hoy':
+        prevStart.setDate(prevStart.getDate() - 1);
+        prevEnd.setDate(prevEnd.getDate() - 1);
+        break;
+      case 'semana':
+        prevStart.setDate(prevStart.getDate() - 14);
+        prevEnd.setDate(prevEnd.getDate() - 7);
+        break;
+      case 'mes':
+        prevStart.setDate(prevStart.getDate() - 60);
+        prevEnd.setDate(prevEnd.getDate() - 30);
+        break;
+      default:
+        prevStart.setFullYear(prevStart.getFullYear() - 1);
+    }
+
+    return ventasPDV.filter((v) => {
+      if (v.estado !== 'completada') return false;
+      const fecha = new Date(v.fecha);
+      return fecha >= prevStart && fecha <= prevEnd;
+    });
+  }, [ventasPDV, periodo]);
+
   const prevTotalVendido = prevVentas.reduce((sum, v) => sum + v.total, 0);
   const ventasChange =
     prevTotalVendido > 0
       ? ((totalVendido - prevTotalVendido) / prevTotalVendido) * 100
       : 0;
 
-  // Sales by day chart
+  // Ventas por día (últimos 7)
   const ventasPorDia = useMemo(() => {
     const days = 7;
     const labels: string[] = [];
     const data: number[] = [];
+    const now = new Date();
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
       labels.push(
         d.toLocaleDateString('es', { weekday: 'short', day: 'numeric' })
       );
-      const total = mockVentas
+      const total = ventasPDV
         .filter(
           (v) =>
             v.estado === 'completada' &&
@@ -146,18 +224,19 @@ export function Dashboard() {
       data.push(total);
     }
     return { labels, data };
-  }, []);
+  }, [ventasPDV]);
 
-  // Top 5 products
+  // Top 5 productos
   const topProductos = useMemo(() => {
     const counts: Record<string, { nombre: string; cantidad: number; total: number }> = {};
     filteredVentas.forEach((v) => {
-      v.items.forEach((item) => {
-        if (!counts[item.productoId]) {
-          counts[item.productoId] = { nombre: item.nombre, cantidad: 0, total: 0 };
+      (v.items ?? []).forEach((item) => {
+        const key = String(item.productoId);
+        if (!counts[key]) {
+          counts[key] = { nombre: item.productoNombre, cantidad: 0, total: 0 };
         }
-        counts[item.productoId].cantidad += item.cantidad;
-        counts[item.productoId].total += item.subtotal;
+        counts[key].cantidad += item.cantidad;
+        counts[key].total += item.subtotal;
       });
     });
     return Object.values(counts)
@@ -165,37 +244,43 @@ export function Dashboard() {
       .slice(0, 5);
   }, [filteredVentas]);
 
-  // Payment methods
+  // Métodos de pago
   const metodosPago = useMemo(() => {
-    const counts = { efectivo: 0, tarjeta: 0, transferencia: 0 };
+    const counts = { efectivo: 0, tarjeta: 0, transferencia: 0, fiado: 0 };
     filteredVentas.forEach((v) => {
-      v.metodosPago.forEach((p) => {
-        counts[p.metodo] += p.monto;
+      (v.metodosPago ?? []).forEach((p) => {
+        if (p.tipo in counts) counts[p.tipo as keyof typeof counts] += p.montoEnCUP;
       });
     });
     return counts;
   }, [filteredVentas]);
 
-  // Alerts
-  const stockBajo = mockProductos.filter((p) => p.stockActual <= p.stockMinimo);
-  const vencimientos = mockProductos.filter(
-    (p) => p.fechaVencimiento && new Date(p.fechaVencimiento) <= new Date('2026-11-17')
+  // Alertas
+  const stockBajo = productosPDV.filter(
+    (p) => !p.esCompuesto && stockTotalProducto(p) <= p.stockMinimo
   );
+  const vencimientos = productosPDV.filter((p) => {
+    if (!p.fechaVencimiento) return false;
+    const dias = (new Date(p.fechaVencimiento).getTime() - Date.now()) / 86400000;
+    return dias <= 14 && dias >= 0;
+  });
+  const totalFiado = clientes.reduce((s, c) => s + (c.saldoPendiente ?? 0), 0);
+  const clientesConDeuda = clientes.filter((c) => (c.saldoPendiente ?? 0) > 0).length;
 
   const kpis = [
     {
       label: 'Vendido',
       value: formatCurrencyWithSymbol(totalVendido),
       icon: DollarSign,
-      change: ventasChange,
+      change: prevTotalVendido > 0 ? ventasChange : null,
       changeLabel: 'vs período anterior',
     },
     {
       label: 'Ganancia',
-      value: formatCurrencyWithSymbol(totalGanancia),
+      value: formatCurrencyWithSymbol(totalGanancia - totalGastos),
       icon: TrendingUp,
       change: null,
-      changeLabel: 'estimada',
+      changeLabel: 'neta (ganancia - gastos)',
     },
     {
       label: 'Ticket Promedio',
@@ -206,18 +291,35 @@ export function Dashboard() {
     },
     {
       label: 'Productos',
-      value: String(totalProductos),
+      value: String(productosPDV.length),
       icon: Package,
       change: null,
       changeLabel: `${stockBajo.length} con stock bajo`,
     },
   ];
 
+  if (cargando) {
+    return (
+      <div className="animate-fade-in">
+        <PageHeader title="Dashboard" subtitle="Cargando datos…" />
+        <Card className="mt-4">
+          <div className="flex items-center justify-center py-12">
+            <div className="w-8 h-8 animate-spin rounded-full border-2 border-blue-500/30 border-t-blue-500" />
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="animate-fade-in">
       <PageHeader
         title="Dashboard"
-        subtitle="Resumen general del negocio"
+        subtitle={
+          modoTodos || !pdvActivo
+            ? 'Todos los puntos de venta'
+            : pdvActivo.nombre.replace(/^[^\s]+\s/, '')
+        }
         actions={
           <div className="flex items-center gap-1 bg-slate-900 border border-white/10 rounded-lg p-0.5">
             {(Object.keys(periodLabels) as Periodo[]).map((p) => (
@@ -238,7 +340,7 @@ export function Dashboard() {
         }
       />
 
-      {/* KPI Cards */}
+      {/* KPIs */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
         {kpis.map((kpi) => {
           const Icon = kpi.icon;
@@ -276,7 +378,6 @@ export function Dashboard() {
 
       {/* Charts row 1 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-        {/* Sales by day */}
         <Card className="lg:col-span-2">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -345,7 +446,6 @@ export function Dashboard() {
           </div>
         </Card>
 
-        {/* Payment methods doughnut */}
         <Card>
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -356,11 +456,16 @@ export function Dashboard() {
           <div className="h-64 flex items-center justify-center">
             <Doughnut
               data={{
-                labels: ['Efectivo', 'Tarjeta', 'Transferencia'],
+                labels: ['Efectivo', 'Tarjeta', 'Transferencia', 'Fiado'],
                 datasets: [
                   {
-                    data: [metodosPago.efectivo, metodosPago.tarjeta, metodosPago.transferencia],
-                    backgroundColor: ['#2563eb', '#10b981', '#f59e0b'],
+                    data: [
+                      metodosPago.efectivo,
+                      metodosPago.tarjeta,
+                      metodosPago.transferencia,
+                      metodosPago.fiado,
+                    ],
+                    backgroundColor: ['#2563eb', '#10b981', '#f59e0b', '#ef4444'],
                     borderColor: '#0f172a',
                     borderWidth: 2,
                     hoverOffset: 4,
@@ -403,7 +508,6 @@ export function Dashboard() {
 
       {/* Charts row 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-        {/* Top 5 products */}
         <Card className="lg:col-span-2">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -412,62 +516,70 @@ export function Dashboard() {
             </div>
           </div>
           <div className="h-64">
-            <Bar
-              data={{
-                labels: topProductos.map((p) => p.nombre),
-                datasets: [
-                  {
-                    label: 'Ingresos',
-                    data: topProductos.map((p) => p.total),
-                    backgroundColor: '#2563eb',
-                    borderRadius: 6,
-                    barThickness: 'flex',
-                    maxBarThickness: 40,
-                  },
-                ],
-              }}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: 'y',
-                plugins: {
-                  legend: { display: false },
-                  tooltip: {
-                    backgroundColor: '#0f172a',
-                    borderColor: 'rgba(255,255,255,0.1)',
-                    borderWidth: 1,
-                    titleColor: '#f8fafc',
-                    bodyColor: '#94a3b8',
-                    padding: 12,
-                    cornerRadius: 8,
-                    displayColors: false,
-                    callbacks: {
-                      label: (ctx) => `${formatCurrency(Number(ctx.raw))} CUP`,
+            {topProductos.length > 0 ? (
+              <Bar
+                data={{
+                  labels: topProductos.map((p) => p.nombre),
+                  datasets: [
+                    {
+                      label: 'Ingresos',
+                      data: topProductos.map((p) => p.total),
+                      backgroundColor: '#2563eb',
+                      borderRadius: 6,
+                      barThickness: 'flex',
+                      maxBarThickness: 40,
+                    },
+                  ],
+                }}
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  indexAxis: 'y',
+                  plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                      backgroundColor: '#0f172a',
+                      borderColor: 'rgba(255,255,255,0.1)',
+                      borderWidth: 1,
+                      titleColor: '#f8fafc',
+                      bodyColor: '#94a3b8',
+                      padding: 12,
+                      cornerRadius: 8,
+                      displayColors: false,
+                      callbacks: {
+                        label: (ctx) => `${formatCurrency(Number(ctx.raw))} CUP`,
+                      },
                     },
                   },
-                },
-                scales: {
-                  x: {
-                    grid: { color: 'rgba(255,255,255,0.05)' },
-                    ticks: {
-                      color: '#64748b',
-                      font: { size: 11 },
-                      callback: (val) => formatCurrency(Number(val)),
+                  scales: {
+                    x: {
+                      grid: { color: 'rgba(255,255,255,0.05)' },
+                      ticks: {
+                        color: '#64748b',
+                        font: { size: 11 },
+                        callback: (val) => formatCurrency(Number(val)),
+                      },
+                      border: { display: false },
                     },
-                    border: { display: false },
+                    y: {
+                      grid: { display: false },
+                      ticks: { color: '#94a3b8', font: { size: 12 } },
+                      border: { color: 'rgba(255,255,255,0.05)' },
+                    },
                   },
-                  y: {
-                    grid: { display: false },
-                    ticks: { color: '#94a3b8', font: { size: 12 } },
-                    border: { color: 'rgba(255,255,255,0.05)' },
-                  },
-                },
-              }}
-            />
+                }}
+              />
+            ) : (
+              <div className="h-full flex items-center justify-center text-center">
+                <div>
+                  <Package className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                  <p className="text-sm text-slate-400">Sin ventas en este período</p>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
 
-        {/* Alerts */}
         <Card>
           <div className="flex items-center gap-2 mb-4">
             <AlertTriangle className="w-5 h-5 text-amber-400" />
@@ -487,7 +599,7 @@ export function Dashboard() {
                     <div key={p.id} className="flex items-center justify-between text-sm">
                       <span className="text-slate-300 truncate">{p.nombre}</span>
                       <span className="text-amber-400 text-xs tabular-nums shrink-0 ml-2">
-                        {p.stockActual}/{p.stockMinimo}
+                        {stockTotalProducto(p)}/{p.stockMinimo}
                       </span>
                     </div>
                   ))}
@@ -502,7 +614,7 @@ export function Dashboard() {
                   </Badge>
                 </div>
                 <div className="space-y-1.5">
-                  {vencimientos.map((p) => (
+                  {vencimientos.slice(0, 4).map((p) => (
                     <div key={p.id} className="flex items-center justify-between text-sm">
                       <span className="text-slate-300 truncate">{p.nombre}</span>
                       <span className="text-red-400 text-xs shrink-0 ml-2 flex items-center gap-1">
@@ -514,16 +626,37 @@ export function Dashboard() {
                 </div>
               </div>
             )}
+            {clientesConDeuda > 0 && (
+              <div className="pt-3 border-t border-white/10">
+                <div className="flex items-center gap-2 mb-2">
+                  <Badge variant="info" dot>
+                    Fiados
+                  </Badge>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Users className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                  <p className="text-xs text-slate-400">
+                    <strong className="text-slate-200">{clientesConDeuda}</strong> clientes deben{' '}
+                    <strong className="text-slate-200">{formatCurrency(totalFiado)}</strong> en total.
+                  </p>
+                </div>
+              </div>
+            )}
+            {stockBajo.length === 0 && vencimientos.length === 0 && clientesConDeuda === 0 && (
+              <p className="text-sm text-slate-400 text-center py-4">
+                ✅ Todo en orden. Sin alertas pendientes.
+              </p>
+            )}
             <div className="pt-3 border-t border-white/10">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 mb-2">
                 <Badge variant="info" dot>
                   Recordatorio
                 </Badge>
               </div>
-              <div className="flex items-start gap-2 mt-2">
+              <div className="flex items-start gap-2">
                 <Database className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-slate-400">
-                  Último backup: hace 5 días. Exporta un respaldo para proteger tus datos.
+                  Haz backup regularmente desde <strong className="text-slate-200">Configuración → Backup</strong>.
                 </p>
               </div>
             </div>
@@ -531,29 +664,29 @@ export function Dashboard() {
         </Card>
       </div>
 
-      {/* Monthly comparison */}
+      {/* Comparativa */}
       <Card className="mt-4">
-        <h3 className="text-base font-semibold text-white mb-4">Comparativa mensual</h3>
+        <h3 className="text-base font-semibold text-white mb-4">Comparativa con período anterior</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <ComparisonItem
-            label="Ventas del mes"
+            label="Ventas"
             current={totalVendido}
             previous={prevTotalVendido}
           />
           <ComparisonItem
             label="Gastos"
-            current={mockGastos.reduce((s, g) => s + g.monto, 0)}
-            previous={9700}
+            current={totalGastos}
+            previous={0}
           />
           <ComparisonItem
-            label="Fiados"
+            label="Fiados otorgados"
             current={filteredVentas.filter((v) => v.esFiado).reduce((s, v) => s + v.total, 0)}
-            previous={1200}
+            previous={0}
           />
           <ComparisonItem
             label="Ganancia neta"
-            current={totalGanancia - mockGastos.reduce((s, g) => s + g.monto, 0)}
-            previous={8200}
+            current={totalGanancia - totalGastos}
+            previous={0}
           />
         </div>
       </Card>
@@ -580,22 +713,24 @@ function ComparisonItem({
       <p className="text-lg font-semibold text-white tabular-nums">
         {formatCurrency(current)}
       </p>
-      <div className="flex items-center gap-1 mt-1">
-        <span
-          className={cn(
-            'inline-flex items-center gap-0.5 text-xs font-medium',
-            isPositive ? 'text-emerald-400' : 'text-red-400'
-          )}
-        >
-          {isPositive ? (
-            <ArrowUpRight className="w-3 h-3" />
-          ) : (
-            <ArrowDownRight className="w-3 h-3" />
-          )}
-          {Math.abs(pct).toFixed(1)}%
-        </span>
-        <span className="text-xs text-slate-500">vs anterior</span>
-      </div>
+      {previous > 0 && (
+        <div className="flex items-center gap-1 mt-1">
+          <span
+            className={cn(
+              'inline-flex items-center gap-0.5 text-xs font-medium',
+              isPositive ? 'text-emerald-400' : 'text-red-400'
+            )}
+          >
+            {isPositive ? (
+              <ArrowUpRight className="w-3 h-3" />
+            ) : (
+              <ArrowDownRight className="w-3 h-3" />
+            )}
+            {Math.abs(pct).toFixed(1)}%
+          </span>
+          <span className="text-xs text-slate-500">vs anterior</span>
+        </div>
+      )}
     </div>
   );
 }
